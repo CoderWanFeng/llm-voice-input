@@ -1,0 +1,23 @@
+# Build artifacts
+.build/
+build/
+DerivedData/
+
+# Xcode
+*.xcodeproj/
+*.xcworkspace/
+xcuserdata/
+
+# SPM
+Package.resolved
+
+# Sensitive: API keys stored locally
+*.json
+!Resources/Info.plist
+!Package.swift
+
+# macOS
+.DS_Store
+
+# Logs
+*.log
