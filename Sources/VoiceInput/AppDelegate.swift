@@ -12,6 +12,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var asr: VolcASRService?
     private var feedTask: Task<Void, Never>?
+    private var finalTimeoutWorkItem: DispatchWorkItem?
     private var lastPartial: String = ""
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -93,6 +94,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func handleStateChange(_ state: StateMachine.State) {
         NSLog("[AppDelegate] state -> \(state)")
         DiagLog.shared.write("[AppDelegate] state -> \(state)")
+        statusBar.updateState(state)
 
         switch state {
         case .idle:
@@ -138,8 +140,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DiagLog.shared.write("[ASR] complete: \(result?.text ?? "<nil>")")
             self.feedTask?.cancel()
             self.feedTask = nil
+            self.finalTimeoutWorkItem?.cancel()
+            self.finalTimeoutWorkItem = nil
+            self.asr = nil
             if let r = result {
-                let text = r.text
+                let cleaned = TextCleaner.basicCleanup(r.text)
+                let text = cleaned.isEmpty ? r.text : cleaned
                 self.textInjector.inject(text)
                 self.statusBar.showLastTranscript(text)
                 self.floatingPanel.showResult(text)
@@ -192,6 +198,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         _ = audioRecorder.stop()
         asr?.finish()
         floatingPanel.showTranscribing()
+        scheduleFinalTimeout()
+    }
+
+    private func scheduleFinalTimeout() {
+        finalTimeoutWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self = self else { return }
+            DiagLog.shared.write("[ASR] final timeout, fallback partial length=\(self.lastPartial.count)")
+            self.feedTask?.cancel()
+            self.feedTask = nil
+            self.asr?.cancel()
+            self.asr = nil
+            self.finalTimeoutWorkItem = nil
+
+            let cleaned = TextCleaner.basicCleanup(self.lastPartial)
+            let text = cleaned.isEmpty ? self.lastPartial : cleaned
+            if text.isEmpty {
+                self.floatingPanel.showError("识别超时，未收到结果")
+            } else {
+                self.textInjector.inject(text)
+                self.statusBar.showLastTranscript(text)
+                self.floatingPanel.showResult(text)
+            }
+            self.stateMachine.forceIdle()
+        }
+        finalTimeoutWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 12.0, execute: workItem)
     }
 
     private func requestMicrophonePermission() {
@@ -208,6 +241,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hotkeyManager.stop()
         _ = audioRecorder.stop()
         feedTask?.cancel()
+        finalTimeoutWorkItem?.cancel()
         asr?.cancel()
     }
 }

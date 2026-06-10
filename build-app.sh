@@ -23,7 +23,7 @@ cp ".build/release/$APP_NAME" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
 # 拷贝 Info.plist
 cp "Resources/Info.plist" "$APP_BUNDLE/Contents/Info.plist"
 
-# 拷贝 SPM 资源（WhisperKit 模型/tokenizer 等）
+# 拷贝 SPM 资源（当前项目暂无资源 bundle，保留兼容）
 if [ -d ".build/release/$APP_NAME_VoiceInput.bundle" ]; then
     cp -R ".build/release/$APP_NAME_VoiceInput.bundle" "$APP_BUNDLE/Contents/Resources/"
 fi

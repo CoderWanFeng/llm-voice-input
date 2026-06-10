@@ -10,7 +10,7 @@ let package = Package(
         .executable(name: "VoiceInput", targets: ["VoiceInput"])
     ],
     dependencies: [
-        // 零外部依赖：使用系统自带的 Speech.framework + AVFoundation + AppKit
+        // 零三方 Swift 依赖：使用系统框架 + 火山引擎豆包 ASR WebSocket API
     ],
     targets: [
         .executableTarget(

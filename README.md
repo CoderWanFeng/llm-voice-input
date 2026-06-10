@@ -1,124 +1,118 @@
 # VoiceInput
 
-按 `Ctrl+Option+K` 开始录音，再按一次停止并把语音转成文字，自动粘贴到当前应用。
+macOS 菜单栏语音输入工具。按 `Option + K` 开始录音，再按一次停止；应用会把语音发送到火山引擎豆包 ASR 识别，并把文字写入剪贴板，具备辅助功能权限时会自动粘贴到当前输入位置。
 
 ## 技术栈
 
 - **Swift 5.9 + AppKit** - 菜单栏 App
-- **AVFoundation** - 麦克风采集（16kHz mono Float32）
-- **Speech.framework** - Apple 系统自带 ASR（**零外部依赖**）
+- **AVFoundation** - 麦克风采集与 16kHz mono 音频转换
+- **URLSessionWebSocketTask** - 对接火山引擎豆包流式 ASR
 - **CGEventTap** - 全局快捷键监听
-- **NSPasteboard + CGEvent** - 文本注入（模拟 Cmd+V）
+- **NSPasteboard + CGEvent** - 文本注入与自动粘贴
 
-## 架构
+## 当前流程
 
-```
-┌────────────────────────────────────────────────┐
-│  HotkeyManager (Ctrl+Option+K)                 │
-└──────────────┬─────────────────────────────────┘
-               │ 按下
-               ▼
-┌────────────────────────────────────────────────┐
-│  StateMachine: idle → recording → transcribing │
-└──────────────┬─────────────────────────────────┘
-               │
-       ┌───────┴───────┐
-       ▼               ▼
-┌─────────────┐  ┌────────────────┐
-│ AudioRecorder│  │ SpeechService  │
-│ 16kHz PCM   │  │ (系统 Speech)  │
-└──────┬──────┘  └────────┬───────┘
-       │                  │
-       │         ┌────────┴─────────┐
-       │         ▼                  │
-       │   写临时 wav (16bit PCM)   │
-       │         │                  │
-       │         ▼                  │
-       │   SFSpeechURLRecognitionRequest
-       │         │                  │
-       │         ▼                  │
-       │       文本                 │
-       ▼                            ▼
-       └────────────┬───────────────┘
-                    ▼
-           ┌────────────────┐
-           │ TextCleaner    │
-           │ (基础清洗)     │
-           └────────┬───────┘
-                    ▼
-           ┌────────────────┐
-           │ TextInjector   │
-           │ NSPasteboard   │
-           │ + Cmd+V 模拟   │
-           └────────────────┘
+```text
+Option + K
+  -> StateMachine: idle / recording / transcribing
+  -> AudioRecorder 采集 16kHz mono PCM
+  -> VolcASRService 发送豆包 ASR WebSocket 音频包
+  -> FloatingPanel 显示录音、partial 文本和最终结果
+  -> TextCleaner 基础清洗
+  -> TextInjector 写入剪贴板并尝试 Cmd+V
 ```
 
 ## 文件结构
 
-```
+```text
 voice-input/
-├── Package.swift                       # SwiftPM 清单（零外部依赖）
-├── build-app.sh                        # 打包 .app bundle 的脚本
-├── Resources/Info.plist                # 权限配置
-└── Sources/VoiceInput/
-    ├── main.swift                     # 入口
-    ├── AppDelegate.swift              # 主控制器
-    ├── AudioRecorder.swift            # 录音
-    ├── HotkeyManager.swift            # 全局快捷键
-    ├── SpeechService.swift            # Apple Speech.framework 封装 + 内置 WAV 写入器
-    ├── TextInjector.swift             # 文本注入
-    ├── TextCleaner.swift              # 文本清洗
-    ├── StateMachine.swift             # 状态管理
-    └── StatusBarController.swift      # 菜单栏 UI
+├── Package.swift
+├── build-app.sh
+├── Resources/
+│   └── Info.plist
+├── Sources/VoiceInput/
+│   ├── main.swift
+│   ├── AppDelegate.swift
+│   ├── AudioRecorder.swift
+│   ├── VolcASRService.swift
+│   ├── TextInjector.swift
+│   ├── TextCleaner.swift
+│   ├── HotkeyManager.swift
+│   ├── StateMachine.swift
+│   ├── StatusBarController.swift
+│   ├── FloatingPanelController.swift
+│   ├── APIKeyDialog.swift
+│   ├── Config.swift
+│   └── DiagLog.swift
+└── doc/
+    ├── PROGRESS_REPORT.md
+    └── USER_MANUAL.md
 ```
 
 ## 运行
 
 ### 前置要求
+
 - macOS 13+
-- Apple Silicon / Intel 都可以
-- Xcode 命令行工具: `xcode-select --install`
-- Swift 5.9+（系统自带即可）
-- **网络**：首次使用 Speech 识别需要联网（Apple 服务器识别），macOS 26+ 可在「系统设置 → 键盘 → 听写」下载离线包
+- Xcode Command Line Tools
+- 火山引擎豆包语音识别 `APP ID` 和 `Access Token`
+- 网络连接
 
-### 步骤
+### 构建
 
-1. **编译并打包成 .app**（必须打包，否则系统不会授予麦克风/辅助功能权限）：
-   ```bash
-   ./build-app.sh
-   ```
+```bash
+./build-app.sh
+```
 
-2. **启动**：
-   ```bash
-   open build/VoiceInput.app
-   ```
-   首次启动会依次弹出：
-   - **麦克风权限** 弹窗 → 点「好」
-   - **语音识别权限** 弹窗 → 点「好」
-   - **Input Monitoring 权限**（CGEventTap 需要）→ 自动跳转到「系统设置 → 隐私与安全性 → Input Monitoring」手动把 VoiceInput 加进去
+构建完成后会生成：
 
-3. **使用**：
-   - 菜单栏出现 🎙️ 图标
-   - 把光标放在任意输入框（编辑器、浏览器、聊天软件等）
-   - 按 `Ctrl+Option+K` 开始录音（菜单栏图标会显示「录音中」）
-   - 说话
-   - 再按 `Ctrl+Option+K` 结束 → 系统识别 → 自动粘贴到光标位置
+```text
+build/VoiceInput.app
+```
 
-## 已知限制（MVP 阶段）
+### 启动
 
-- **依赖系统 Speech 准确率**：没有本地大模型，对术语/口音识别可能比 Whisper 差
-- **依赖网络**：默认走 Apple 服务器（macOS 26+ 可配置离线）
-- **首次需手动授权**：Input Monitoring 权限必须到系统设置里加
-- **整段识别**：说完一整句才出结果，没有流式输出
-- **没有 LLM 后处理**：只做基础去口头禅
-- **无浮动 UI 反馈**：录音时只能看菜单栏图标
+```bash
+open build/VoiceInput.app
+```
 
-## 下一步优化方向
+首次启动需要授权：
 
-- [ ] 切到 Whisper.cpp（本地，更准，但需要能下到二进制或自己编译）
-- [ ] 加 Silero VAD 实现"说完自动停"
-- [ ] 支持流式识别（边说边出字）
-- [ ] 加 LLM 润色（接 GPT-4o-mini / Claude Haiku）
-- [ ] 屏幕 OCR 上下文（提升专有名词识别率）
-- [ ] 浮动面板显示波形 + 实时文本
-- [ ] 说话人分离（会议模式）
+- 麦克风：用于录音
+- 输入监控：用于监听 `Option + K`
+- 辅助功能：用于自动模拟 `Cmd + V` 粘贴
+
+## 配置豆包 ASR
+
+方式一：点击菜单栏 `🎙️` 图标，选择“设置豆包语音…”，填入 `APP ID` 和 `Access Token`。
+
+方式二：手动写入配置文件：
+
+```text
+~/Library/Application Support/VoiceInput/config.json
+```
+
+```json
+{
+  "app_id": "你的 APP ID",
+  "access_token": "你的 Access Token"
+}
+```
+
+## 使用
+
+1. 将光标放到任意输入框。
+2. 按 `Option + K` 开始录音。
+3. 说话，底部悬浮面板会显示录音状态和识别文本。
+4. 再按 `Option + K` 停止录音。
+5. 识别完成后自动写入剪贴板；如果已授权辅助功能，会自动粘贴。
+
+菜单栏也提供“测试快捷键”和“5秒自动录音测试”，可用于排查输入监控权限或完整识别链路。
+
+## 已知限制
+
+- 豆包 ASR 依赖网络和有效凭证。
+- 快捷键当前固定为 `Option + K`，暂不支持自定义。
+- Access Token 当前保存在本地配置文件，后续可迁移到 Keychain。
+- 只有基础文本清洗，暂未接入 LLM 后处理。
+- 本地构建使用 ad-hoc 签名，暂未做正式发布签名和公证。
