@@ -109,6 +109,51 @@ open build/VoiceInput.app
 
 菜单栏也提供“测试快捷键”和“5秒自动录音测试”，可用于排查输入监控权限或完整识别链路。
 
+## 分支与提交流程
+
+本项目采用简易 Git Flow：
+
+- **`main`** —— 稳定分支，每个可发布版本对应一个 commit/tag。
+- **`develop`** —— 开发分支，日常功能在此合入并集成测试。
+
+### 提交流程
+
+1. 从最新的 `develop` 分支切出自己的功能分支：
+
+   ```bash
+   git checkout develop
+   git pull
+   git checkout -b feat/your-feature-name
+   ```
+
+2. 开发完成后，本地提交：
+
+   ```bash
+   git add .
+   git commit -m "feat: 简要描述你的修改"
+   ```
+
+3. 推送到远程自己的分支：
+
+   ```bash
+   git push -u origin feat/your-feature-name
+   ```
+
+4. 在 GitHub 上发起 Pull Request：
+
+   - 目标分支（base）选择 **`develop`**，**不要选择 `main`**。
+   - 对比分支（compare）选择你自己的功能分支。
+   - 填写 PR 标题与说明，关联对应 issue（如有）。
+   - 等待 CI / Code Review 通过后由维护者合入 `develop`。
+
+5. 后续会由维护者从 `develop` 统一发起 `develop → main` 的合并，作为新版本发布。
+
+### 注意事项
+
+- **不要直接向 `main` 提 PR**，所有改动先合入 `develop`。
+- 提交前请确保本地已构建运行过 `./build-app.sh`，避免引入编译错误。
+- 涉及豆包凭证、个人信息等敏感内容时，**切勿写入代码或文档**。
+
 ## 已知限制
 
 - 豆包 ASR 依赖网络和有效凭证。
