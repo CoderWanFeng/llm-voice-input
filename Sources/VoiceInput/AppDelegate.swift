@@ -208,9 +208,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DiagLog.shared.write("[ASR] final timeout, fallback partial length=\(self.lastPartial.count)")
             self.feedTask?.cancel()
             self.feedTask = nil
-            self.asr?.cancel()
-            self.asr = nil
-            self.finalTimeoutWorkItem = nil
+                self.asr?.cancel()
+                self.asr = nil
+                self.finalTimeoutWorkItem = nil
 
             let cleaned = TextCleaner.basicCleanup(self.lastPartial)
             let text = cleaned.isEmpty ? self.lastPartial : cleaned

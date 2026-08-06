@@ -130,7 +130,26 @@ open build/VoiceInput.app
 }
 ```
 
-### 获取配置
+### 配置优先级
+
+配置按以下优先级读取：
+1. **环境变量**（优先）
+2. 配置文件
+
+### 方式一：环境变量配置（推荐）
+
+**临时设置**（终端运行）：
+```bash
+VOICEINPUT_APP_ID="您的 APP ID" VOICEINPUT_ACCESS_TOKEN="您的 Access Token" open build/VoiceInput.app
+```
+
+**永久设置**（添加到 `~/.zshrc` 或 `~/.bashrc`）：
+```bash
+export VOICEINPUT_APP_ID="您的 APP ID"
+export VOICEINPUT_ACCESS_TOKEN="您的 Access Token"
+```
+
+### 方式二：配置文件
 
 1. 登录火山引擎控制台
 2. 创建语音识别应用

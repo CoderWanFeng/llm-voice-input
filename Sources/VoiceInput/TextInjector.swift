@@ -31,9 +31,9 @@ final class TextInjector {
             return
         }
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
             self?.simulatePaste()
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
                 if let previous = previousContents {
                     pasteboard.clearContents()
                     pasteboard.setString(previous, forType: .string)
