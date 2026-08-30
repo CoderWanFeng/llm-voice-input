@@ -1,0 +1,36 @@
+<component name="InspectionProjectProfileManager">
+  <profile version="1.0">
+    <option name="myName" value="Project Default" />
+    <inspection_tool class="PyInterpreterInspection" enabled="false" level="WARNING" enabled_by_default="false" />
+    <inspection_tool class="PyPackageRequirementsInspection" enabled="true" level="WARNING" enabled_by_default="true">
+      <option name="ignoredPackages">
+        <value>
+          <list size="15">
+            <item index="0" class="java.lang.String" itemvalue="tencentcloud_sdk_python" />
+            <item index="1" class="java.lang.String" itemvalue="pymupdf" />
+            <item index="2" class="java.lang.String" itemvalue="setuptools" />
+            <item index="3" class="java.lang.String" itemvalue="pywin32" />
+            <item index="4" class="java.lang.String" itemvalue="PySide6_Addons" />
+            <item index="5" class="java.lang.String" itemvalue="PySide6_Essentials" />
+            <item index="6" class="java.lang.String" itemvalue="uiautomation" />
+            <item index="7" class="java.lang.String" itemvalue="Requests" />
+            <item index="8" class="java.lang.String" itemvalue="pywinauto" />
+            <item index="9" class="java.lang.String" itemvalue="pandas" />
+            <item index="10" class="java.lang.String" itemvalue="pyscreenshot" />
+            <item index="11" class="java.lang.String" itemvalue="schedule" />
+            <item index="12" class="java.lang.String" itemvalue="python-office" />
+            <item index="13" class="java.lang.String" itemvalue="poai" />
+            <item index="14" class="java.lang.String" itemvalue="PySide6" />
+          </list>
+        </value>
+      </option>
+    </inspection_tool>
+    <inspection_tool class="PyUnresolvedReferencesInspection" enabled="true" level="WARNING" enabled_by_default="true">
+      <option name="ignoredIdentifiers">
+        <list>
+          <option value="examples.course.code.popdf.*" />
+        </list>
+      </option>
+    </inspection_tool>
+  </profile>
+</component>
