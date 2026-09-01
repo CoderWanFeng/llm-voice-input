@@ -16,8 +16,5 @@ Package.resolved
 !Resources/Info.plist
 !Package.swift
 
-# macOS
-.DS_Store
-
 # Logs
 *.log
