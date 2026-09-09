@@ -32,8 +32,12 @@ from .audio_recorder import AudioRecorder, samples_to_int16_le
 from .diag_log import DiagLog
 from .floating_panel_controller import FloatingPanelController
 from .hotkey_manager import HotkeyManager
+from .llm_post_processor import polish_text
+from .llm_settings_dialog import LLMSettingsDialog
 from .state_machine import StateMachine
 from .status_bar_controller import StatusBarController
+from .wake_word_detector import WAKE_WORD, WakeWordDetector
+from .wake_word_dialog import WakeWordDialog
 
 # 导入各 ASR 提供商实现（延迟在工厂函数中实例化）
 from .volc_asr_service import VolcASRService
@@ -90,6 +94,13 @@ class VoiceInputApp:
         self._hotkey = HotkeyManager()
         # 托盘控制器
         self._tray = StatusBarController()
+        # 语音唤醒检测器（Vosk 离线检测；唤醒词/结束词均可在设置对话框自定义）
+        self._wake = WakeWordDetector(
+            on_wake=self._on_wake_word,
+            wake_word=config_module.load().wake_word,
+            stop_word=config_module.load().stop_word,
+            on_stop=self._on_stop_word,
+        )
         # 当前实时音量（由录音回调更新）
         self._current_amplitude = 0.0
         # 当前 partial 文本（用于面板刷新）
@@ -109,9 +120,18 @@ class VoiceInputApp:
         self._tray.on_setup_credentials = self._on_setup_credentials
         self._tray.on_test_hotkey = self._on_test_hotkey
         self._tray.on_test_5s_recording = self._on_test_5s_recording
+        self._tray.on_setup_wake_word = self._open_wake_settings
+        self._tray.on_setup_llm = self._open_llm_settings
         self._tray.on_quit = self._on_quit
         self._recorder.on_amplitude = self._on_amplitude
         self._recorder.on_silence_timeout = self._on_silence_timeout
+        # 分接录音音频给结束词检测（录音期间复用同一麦克风流）
+        self._recorder.on_audio_chunk = self._wake.feed_audio
+        # 语音结束词触发标记：True 时在识别结果中剔除结束词文本
+        self._strip_stop_word = False
+        # 录音开始时记录的目标窗口句柄，注入前据此切回焦点
+        # （AI 润色期间用户可能切走焦点，需要切回避免按键丢失）
+        self._target_hwnd: int = 0
 
     def run(self) -> None:
         """应用入口：检查凭证、启动托盘与热键、运行主循环。
@@ -140,10 +160,23 @@ class VoiceInputApp:
         # 启动热键监听（后台线程）
         self._hotkey.start()
 
+        # 启动语音唤醒/结束词检测（Vosk 离线；未开启或模型/依赖缺失时静默跳过）
+        wake_cfg = config_module.load()
+        if wake_cfg.wake_word_enabled or wake_cfg.stop_word_enabled:
+            if self._wake.start():
+                if not wake_cfg.wake_word_enabled:
+                    # 仅结束词模式：唤醒词已禁用，不打开空闲监听流
+                    self._wake.pause()
+            else:
+                DiagLog.shared().write(
+                    "[App] 语音唤醒启动失败（缺少 Vosk 模型或依赖），热键仍可用"
+                )
+
         # 默认打开工具面板（就绪状态），无需点击托盘图标即可看到主界面
         self._panel.schedule_on_main(
             lambda: self._panel.show_idle(
-                provider_name=config_module.load().get_provider_display_name()
+                provider_name=config_module.load().get_provider_display_name(),
+                wake_word=self._wake_hint(),
             )
         )
 
@@ -188,6 +221,9 @@ class VoiceInputApp:
 
     def _begin_recording(self) -> None:
         """开始录音：切换状态、启动 ASR 与录音器、启动拉取定时器。"""
+        # 在任何 UI 变化前记录当前前台窗口，注入时据此切回焦点
+        # （热键触发时焦点在目标输入框；唤醒词触发时焦点在用户当时使用的窗口）
+        self._target_hwnd = text_injector.get_foreground_hwnd()
         # 状态机切换
         if not self._state.toggle_recording():
             return
@@ -301,14 +337,83 @@ class VoiceInputApp:
             return
         # 清洗文本
         cleaned = text_cleaner.basic_cleanup(result.text)
+        # 语音结束词触发时，云识别结果会包含结束词本身，注入前剔除
+        if self._strip_stop_word:
+            self._strip_stop_word = False
+            stop = config_module.load().stop_word
+            if stop and stop in cleaned:
+                cleaned = cleaned.replace(stop, "")
+                # 去除剔除后残留的边缘标点与空白
+                cleaned = cleaned.strip(" ，。,.！!？?、；;：: \n\t")
+                DiagLog.shared().write("[App] 已从识别结果中剔除结束词")
         DiagLog.shared().write(f"[App] 清洗后文本: {cleaned[:80]}")
-        # 注入文本（在主线程同步执行，内部有 sleep，会短暂阻塞 UI）
-        if cleaned:
-            text_injector.inject(cleaned)
-        self._panel.show_final(cleaned if cleaned else result.text)
+        # 空文本：直接展示原始结果并复位（无可润色内容）
+        if not cleaned:
+            self._finish_inject(result.text)
+            return
+        # AI 润色：启用且凭证完整时，异步调用大模型纠错并按要点换行
+        cfg = config_module.load()
+        if cfg.llm_enabled and cfg.llm_api_key and cfg.llm_model:
+            self._start_llm_polish(cleaned)
+            return
+        # 未启用润色：直接注入（在主线程同步执行，内部有 sleep，会短暂阻塞 UI）
+        self._finish_inject(cleaned)
+
+    def _finish_inject(self, final_text: str) -> None:
+        """注入最终文本并复位状态（主线程调用）。
+
+        Args:
+            final_text: 待注入的最终文本
+        """
+        if final_text:
+            ok = text_injector.inject(final_text, target_hwnd=self._target_hwnd)
+            if not ok:
+                # 焦点切换失败：剪贴板已保留文本，提示用户手动粘贴
+                DiagLog.shared().write("[App] 注入失败：目标窗口已切换，提示用户手动粘贴")
+                self._panel.show_error("目标窗口已切换，请到目标位置按 Ctrl+V 粘贴")
+                self._state.force_idle()
+                self._asr = None
+                self._target_hwnd = 0
+                return
+        self._panel.show_final(final_text)
         # 复位状态
         self._state.force_idle()
         self._asr = None
+        self._target_hwnd = 0
+
+    def _start_llm_polish(self, text: str) -> None:
+        """后台线程调用 LLM 润色，完成后回主线程注入。
+
+        润色期间面板显示「AI 润色中」；调用失败或超时自动回退原文，
+        保证识别结果不因润色环节而丢失。
+
+        Args:
+            text: 清洗后的 ASR 文本
+        """
+        cfg = config_module.load()
+        base_url = cfg.llm_base_url or config_module.LLM_DEFAULT_BASE_URL
+        model = cfg.llm_model
+        api_key = cfg.llm_api_key
+        # 面板切换为润色中状态（旋转动画，提示用户稍候）
+        self._panel.show_polishing(text)
+        DiagLog.shared().write(f"[App] AI 润色开始: model={model}")
+
+        def worker() -> None:
+            """润色工作线程：成功用润色文本，失败回退原文。"""
+            try:
+                polished = polish_text(
+                    text,
+                    base_url=base_url,
+                    api_key=api_key,
+                    model=model,
+                )
+            except Exception as e:
+                DiagLog.shared().write(f"[App] LLM 润色失败，使用原文: {e}")
+                polished = text
+            # 回到主线程注入文本
+            self._panel.schedule_on_main(lambda: self._finish_inject(polished))
+
+        threading.Thread(target=worker, daemon=True).start()
 
     # ===== 音频拉取定时器 =====
 
@@ -364,9 +469,25 @@ class VoiceInputApp:
     # ===== 状态机变更回调（任意线程触发，需调度到主线程） =====
 
     def _on_state_change(self, new_state: str) -> None:
-        """状态变更通知：日志记录，UI 由具体动作驱动。"""
-        # 这里只打日志，具体面板更新在 _begin/_end/_handle_complete 中处理
-        pass
+        """状态变更通知：控制唤醒监听与结束词检测的模式切换。
+
+        - 空闲：唤醒词启用时恢复常驻监听流；仅结束词模式则保持关闭
+        - 录音：关闭唤醒监听流让出麦克风；结束词启用时进入分接检测模式
+        - 识别中：录音器已停，退出结束词检测并清空积压
+        """
+        cfg = config_module.load()
+        if new_state == StateMachine.STATE_IDLE:
+            if cfg.wake_word_enabled:
+                self._wake.resume()
+            else:
+                self._wake.pause()
+        elif new_state == StateMachine.STATE_RECORDING:
+            self._wake.pause()
+            if cfg.stop_word_enabled:
+                self._wake.start_stop_listen()
+        else:  # transcribing
+            self._wake.pause()
+            self._wake.stop_stop_listen()
 
     # ===== 托盘菜单回调 =====
 
@@ -374,7 +495,8 @@ class VoiceInputApp:
         """菜单：显示工具面板（就绪状态）。"""
         self._panel.schedule_on_main(
             lambda: self._panel.show_idle(
-                provider_name=config_module.load().get_provider_display_name()
+                provider_name=config_module.load().get_provider_display_name(),
+                wake_word=self._wake_hint(),
             )
         )
 
@@ -382,6 +504,119 @@ class VoiceInputApp:
         """菜单：设置语音识别凭证。"""
         dialog = APIKeyDialog(self._panel.root())
         dialog.show()
+
+    def _open_wake_settings(self) -> None:
+        """菜单：打开语音唤醒设置对话框。
+
+        对话框保存后热更新检测器（重建语法识别器）与面板提示，
+        无需重启应用；关闭对话框（取消）则不做任何变更。
+        """
+        dialog = WakeWordDialog(self._panel.root(), self._wake)
+        if not dialog.show():
+            return
+        cfg = config_module.load()
+        # 热更新唤醒词与结束词（检测器运行中则重建识别器，未运行则记录待 start 使用）
+        self._wake.update_wake_word(cfg.wake_word)
+        self._wake.update_stop_word(cfg.stop_word)
+        self._apply_wake_state(cfg)
+        # 组装面板反馈消息
+        parts = []
+        if cfg.wake_word_enabled:
+            parts.append(f"唤醒词「{cfg.wake_word}」")
+        if cfg.stop_word_enabled:
+            parts.append(f"结束词「{cfg.stop_word}」")
+        if not parts:
+            message = "语音唤醒已关闭（热键 Ctrl+Alt+K 仍可用）"
+        elif not self._wake.available:
+            message = "语音唤醒开启失败：缺少 Vosk 模型或依赖"
+        else:
+            message = "语音唤醒已更新：" + "、".join(parts)
+        self._panel.show_message_test(message)
+        # 空闲时刷新就绪面板，同步最新的唤醒词提示
+        if self._state.state == StateMachine.STATE_IDLE:
+            self._panel.show_idle(
+                provider_name=cfg.get_provider_display_name(),
+                wake_word=self._wake_hint(),
+            )
+
+    def _open_llm_settings(self) -> None:
+        """菜单：打开 AI 润色设置对话框。
+
+        保存后下次识别完成即生效，无需重启；
+        关闭对话框（取消）则不做任何变更。
+        """
+        dialog = LLMSettingsDialog(self._panel.root())
+        if not dialog.show():
+            return
+        cfg = config_module.load()
+        if cfg.llm_enabled:
+            message = f"AI 润色已启用（模型: {cfg.llm_model}）"
+        else:
+            message = "AI 润色已关闭"
+        self._panel.show_message_test(message)
+
+    def _apply_wake_state(self, cfg) -> None:
+        """按最新配置同步唤醒检测器的运行状态（对话框保存后调用）。
+
+        - 都未启用：停止检测线程
+        - 任一启用但未运行：启动检测线程（仅结束词模式不开空闲监听流）
+        - 运行中：空闲监听流仅在唤醒词启用时打开
+        """
+        need_running = cfg.wake_word_enabled or cfg.stop_word_enabled
+        if need_running and not self._wake.is_running:
+            if not self._wake.start():
+                return
+        elif not need_running:
+            self._wake.stop()
+            return
+        # 运行中：按唤醒词开关同步空闲监听流
+        if self._state.state == StateMachine.STATE_IDLE:
+            if cfg.wake_word_enabled:
+                self._wake.resume()
+            else:
+                self._wake.pause()
+
+    def _wake_hint(self) -> str:
+        """返回就绪面板的唤醒词提示（未开启或不可用时返回空串）。"""
+        if self._wake.available and config_module.load().wake_word_enabled:
+            return config_module.load().wake_word or WAKE_WORD
+        return ""
+
+    # ===== 语音唤醒回调 =====
+
+    def _on_wake_word(self) -> None:
+        """唤醒词命中（检测线程触发）：调度到主线程处理。"""
+        self._panel.schedule_on_main(self._handle_wake_word)
+
+    def _handle_wake_word(self) -> None:
+        """主线程处理唤醒命中：仅在空闲状态开始录音。
+
+        若命中时已在录音/识别（如热键抢先触发），直接忽略，
+        避免把正在进行的录音误切换为结束。
+        """
+        if self._state.state != StateMachine.STATE_IDLE:
+            DiagLog.shared().write("[Wake] 命中时非空闲状态，忽略本次唤醒")
+            return
+        DiagLog.shared().write("[App] 语音唤醒触发录音")
+        self._handle_toggle()
+
+    # ===== 语音结束词回调 =====
+
+    def _on_stop_word(self) -> None:
+        """结束词命中（检测线程触发）：调度到主线程处理。"""
+        self._panel.schedule_on_main(self._handle_stop_word)
+
+    def _handle_stop_word(self) -> None:
+        """主线程处理结束词命中：结束录音，并在识别结果中剔除结束词。
+
+        结束词语音本身也在录音流里，云识别会把它转写进结果，
+        因此设置剔除标记，注入前从文本中删除。
+        """
+        if self._state.state != StateMachine.STATE_RECORDING:
+            return
+        DiagLog.shared().write("[App] 语音结束词触发停止录音")
+        self._strip_stop_word = True
+        self._end_recording()
 
     def _on_test_hotkey(self) -> None:
         """菜单：测试快捷键。"""
@@ -420,8 +655,9 @@ class VoiceInputApp:
         if self._asr is not None:
             self._asr.cancel()
             self._asr = None
-        # 停止热键与托盘
+        # 停止热键、语音唤醒与托盘
         self._hotkey.stop()
+        self._wake.stop()
         self._tray.stop()
         # 退出 tkinter 主循环
         self._panel.quit_mainloop()
@@ -429,5 +665,6 @@ class VoiceInputApp:
     def _cleanup(self) -> None:
         """退出后清理。"""
         self._hotkey.stop()
+        self._wake.stop()
         self._tray.stop()
         DiagLog.shared().write("[App] 已退出")

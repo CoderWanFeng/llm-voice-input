@@ -47,6 +47,12 @@ PROVIDER_NAMES: Dict[str, str] = {
 # 提供商ID列表（用于下拉选择）
 PROVIDER_LIST = list(PROVIDER_NAMES.keys())
 
+# LLM 润色默认配置
+# 默认接口地址：阿里云百炼 DashScope 的 OpenAI 兼容模式（sk- 开头的 Key）
+LLM_DEFAULT_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+# 默认模型名（用户可在设置对话框中下拉选择或手动输入）
+LLM_DEFAULT_MODEL = "qwen3.7-plus"
+
 
 @dataclass
 class AppConfig:
@@ -56,11 +62,27 @@ class AppConfig:
         provider: 当前选中的提供商ID
         providers: 各提供商的凭证配置字典，key 为 provider id
         is_from_env: 配置是否来自环境变量（而非用户主动在对话框中配置）
+        wake_word_enabled: 是否启用语音唤醒（Vosk 离线检测唤醒词）
+        wake_word: 自定义唤醒词（2~6 个常用汉字，默认「小薇小薇」）
+        stop_word_enabled: 是否启用语音结束词（录音中说出自动停止录音）
+        stop_word: 自定义结束词（默认「结束录音」，默认不启用以免误触）
+        llm_enabled: 是否启用 AI 润色（识别完成后用大模型纠错/按要点换行）
+        llm_base_url: OpenAI 兼容接口地址（如阿里云百炼 DashScope）
+        llm_api_key: 大模型服务 API Key
+        llm_model: 模型名（如 qwen3.7-plus，可下拉选择或手动输入）
     """
 
     provider: str = "volc"
     providers: Dict[str, Dict[str, str]] = field(default_factory=dict)
     is_from_env: bool = False
+    wake_word_enabled: bool = True
+    wake_word: str = "小薇小薇"
+    stop_word_enabled: bool = False
+    stop_word: str = "结束录音"
+    llm_enabled: bool = False
+    llm_base_url: str = ""
+    llm_api_key: str = ""
+    llm_model: str = ""
 
     @property
     def is_configured(self) -> bool:
@@ -199,7 +221,18 @@ def load() -> AppConfig:
             )
             if has_creds:
                 DiagLog.shared().write(f"[Config] 从配置文件加载（提供商: {provider}）")
-                return AppConfig(provider=provider, providers=providers)
+                return AppConfig(
+                    provider=provider,
+                    providers=providers,
+                    wake_word_enabled=bool(data.get("wake_word_enabled", True)),
+                    wake_word=str(data.get("wake_word", "小薇小薇")).strip() or "小薇小薇",
+                    stop_word_enabled=bool(data.get("stop_word_enabled", False)),
+                    stop_word=str(data.get("stop_word", "结束录音")).strip() or "结束录音",
+                    llm_enabled=bool(data.get("llm_enabled", False)),
+                    llm_base_url=str(data.get("llm_base_url", "")).strip(),
+                    llm_api_key=str(data.get("llm_api_key", "")).strip(),
+                    llm_model=str(data.get("llm_model", "")).strip(),
+                )
 
     # 2. 配置文件无有效凭证，回退到环境变量
     env_provider = os.environ.get(_PROVIDER_KEY, "").strip()
@@ -253,6 +286,14 @@ def save(config: AppConfig) -> None:
     data = {
         "provider": config.provider,
         "providers": config.providers,
+        "wake_word_enabled": config.wake_word_enabled,
+        "wake_word": config.wake_word,
+        "stop_word_enabled": config.stop_word_enabled,
+        "stop_word": config.stop_word,
+        "llm_enabled": config.llm_enabled,
+        "llm_base_url": config.llm_base_url,
+        "llm_api_key": config.llm_api_key,
+        "llm_model": config.llm_model,
     }
     try:
         with open(path, "w", encoding="utf-8") as f:
@@ -281,5 +322,51 @@ def switch_provider(provider: str) -> AppConfig:
     """切换当前使用的提供商并保存。"""
     cfg = load()
     cfg.provider = provider
+    save(cfg)
+    return cfg
+
+
+def set_wake_settings(
+    enabled: bool,
+    wake_word: str,
+    stop_enabled: bool,
+    stop_word: str,
+) -> AppConfig:
+    """保存语音唤醒与结束词设置。
+
+    Args:
+        enabled: 是否启用语音唤醒
+        wake_word: 唤醒词（2~6 个常用汉字，空串时回退默认词）
+        stop_enabled: 是否启用语音结束词（录音中说出自动停止）
+        stop_word: 结束词（空串时回退默认词）
+    """
+    cfg = load()
+    cfg.wake_word_enabled = enabled
+    cfg.wake_word = wake_word.strip() or "小薇小薇"
+    cfg.stop_word_enabled = stop_enabled
+    cfg.stop_word = stop_word.strip() or "结束录音"
+    save(cfg)
+    return cfg
+
+
+def set_llm_settings(
+    enabled: bool,
+    base_url: str,
+    api_key: str,
+    model: str,
+) -> AppConfig:
+    """保存 AI 润色（大模型后处理）设置。
+
+    Args:
+        enabled: 是否启用 AI 润色
+        base_url: OpenAI 兼容接口地址（空串时回退默认地址）
+        api_key: API Key
+        model: 模型名（空串时回退默认模型）
+    """
+    cfg = load()
+    cfg.llm_enabled = enabled
+    cfg.llm_base_url = base_url.strip() or LLM_DEFAULT_BASE_URL
+    cfg.llm_api_key = api_key.strip()
+    cfg.llm_model = model.strip() or LLM_DEFAULT_MODEL
     save(cfg)
     return cfg

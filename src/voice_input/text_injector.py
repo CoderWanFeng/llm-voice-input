@@ -36,6 +36,9 @@ VK_V = 0x56        # V
 # 剪贴板格式
 CF_UNICODETEXT = 13
 
+# ShowWindow 命令：恢复最小化窗口
+SW_RESTORE = 9
+
 
 # ===== 结构体定义 =====
 
@@ -105,12 +108,75 @@ _user32.SetClipboardData.restype = wintypes.HANDLE
 _user32.SetClipboardData.argtypes = [wintypes.UINT, wintypes.HANDLE]
 _user32.SendInput.restype = wintypes.UINT
 _user32.SendInput.argtypes = [wintypes.UINT, ctypes.POINTER(INPUT), ctypes.c_int]
+# 焦点管理 API（注入前切回目标窗口，防止润色期间用户切走焦点导致按键丢失）
+_user32.GetForegroundWindow.restype = wintypes.HWND
+_user32.GetForegroundWindow.argtypes = []
+_user32.SetForegroundWindow.restype = wintypes.BOOL
+_user32.SetForegroundWindow.argtypes = [wintypes.HWND]
+_user32.IsWindow.restype = wintypes.BOOL
+_user32.IsWindow.argtypes = [wintypes.HWND]
+_user32.ShowWindow.restype = wintypes.BOOL
+_user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+_user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+_user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+_user32.AttachThreadInput.restype = wintypes.BOOL
+_user32.AttachThreadInput.argtypes = [wintypes.DWORD, wintypes.DWORD, wintypes.BOOL]
+_kernel32.GetCurrentThreadId.restype = wintypes.DWORD
+_kernel32.GetCurrentThreadId.argtypes = []
 _kernel32.GlobalAlloc.restype = wintypes.HANDLE
 _kernel32.GlobalAlloc.argtypes = [wintypes.UINT, ctypes.c_size_t]
 _kernel32.GlobalLock.restype = ctypes.c_void_p
 _kernel32.GlobalLock.argtypes = [wintypes.HANDLE]
 _kernel32.GlobalUnlock.restype = wintypes.BOOL
 _kernel32.GlobalUnlock.argtypes = [wintypes.HANDLE]
+
+
+def get_foreground_hwnd() -> int:
+    """获取当前前台窗口句柄（无窗口时返回 0）。
+
+    用于在录音开始时记录目标输入框所在窗口，注入前据此切回焦点。
+    """
+    return int(_user32.GetForegroundWindow())
+
+
+def _restore_foreground(hwnd: int) -> bool:
+    """注入前把目标窗口切回前台。
+
+    Windows 的焦点窃取限制（foreground lock）下，直接 SetForegroundWindow
+    通常只会让任务栏图标闪烁而不会真正切换。使用 AttachThreadInput 把
+    当前线程输入队列与前台窗口线程绑定，可绕过该限制获得设置前台的权限。
+
+    Args:
+        hwnd: 录音开始时记录的目标窗口句柄
+
+    Returns:
+        True 表示已切回目标窗口；False 表示句柄已失效或切换失败，
+        调用方应保留剪贴板文本让用户手动 Ctrl+V
+    """
+    if not hwnd or not _user32.IsWindow(hwnd):
+        return False
+
+    # 当前前台窗口及其所属线程
+    fg_hwnd = _user32.GetForegroundWindow()
+    fg_tid = (
+        _user32.GetWindowThreadProcessId(fg_hwnd, None) if fg_hwnd else 0
+    )
+    current_tid = _kernel32.GetCurrentThreadId()
+
+    # 若当前线程不是前台窗口线程，附加输入队列以获得设置前台权限
+    attached = False
+    if fg_tid and fg_tid != current_tid:
+        attached = bool(_user32.AttachThreadInput(current_tid, fg_tid, True))
+
+    try:
+        # 取消最小化（若目标窗口被最小化）
+        _user32.ShowWindow(hwnd, SW_RESTORE)
+        ok = bool(_user32.SetForegroundWindow(hwnd))
+    finally:
+        if attached:
+            _user32.AttachThreadInput(current_tid, fg_tid, False)
+
+    return ok
 
 
 def _make_key_input(vk: int, up: bool) -> INPUT:
@@ -192,11 +258,37 @@ def _set_clipboard_text(text: str) -> bool:
         return False
 
 
-def inject(text: str) -> None:
-    """注入文本：写剪贴板 + 模拟 Ctrl+V 粘贴。"""
+def inject(text: str, target_hwnd: int = 0) -> bool:
+    """注入文本：写剪贴板 + 模拟 Ctrl+V 粘贴。
+
+    若提供了 target_hwnd（录音开始时记录的目标窗口句柄），注入前会先
+    把焦点切回该窗口，避免润色期间用户切走焦点后按键事件落到错误窗口。
+    焦点切换失败时仅写入剪贴板并返回 False，由调用方提示用户手动 Ctrl+V。
+
+    Args:
+        text: 待注入文本
+        target_hwnd: 录音开始时记录的目标窗口句柄，0 表示不切换焦点
+
+    Returns:
+        True 表示已发送 Ctrl+V；False 表示焦点切换失败，剪贴板已保留
+                 文本供用户手动粘贴（此时不应恢复原剪贴板）
+    """
     if not text:
-        return
+        return True
     DiagLog.shared().write(f"[Inject] 准备注入文本: {text[:50]}")
+
+    # 若提供了目标窗口，注入前尝试切回焦点
+    if target_hwnd:
+        if not _restore_foreground(target_hwnd):
+            # 句柄失效：写剪贴板让用户手动粘贴，不发送按键也不恢复原剪贴板
+            _set_clipboard_text(text)
+            DiagLog.shared().write(
+                "[Inject] ⚠ 目标窗口已失效，保留剪贴板让用户手动粘贴"
+            )
+            return False
+        DiagLog.shared().write("[Inject] ✅ 已切回目标窗口")
+        # 切回后稍等让目标窗口就绪
+        time.sleep(0.05)
 
     # 1. 备份当前剪贴板内容
     previous = _get_clipboard_text()
@@ -205,7 +297,7 @@ def inject(text: str) -> None:
     # 2. 写入新文本
     if not _set_clipboard_text(text):
         DiagLog.shared().write("[Inject] ❌ 写入剪贴板失败")
-        return
+        return False
     DiagLog.shared().write("[Inject] ✅ 剪贴板已写入")
 
     # 3. 等 150ms 让剪贴板与目标应用就绪
@@ -219,6 +311,8 @@ def inject(text: str) -> None:
     if previous:
         _set_clipboard_text(previous)
         DiagLog.shared().write("[Inject] 已恢复原剪贴板")
+
+    return True
 
 
 def _simulate_paste() -> None:

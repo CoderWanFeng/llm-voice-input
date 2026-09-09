@@ -4,4 +4,6 @@ websockets>=12.0
 pynput>=1.7
 pystray>=0.19
 Pillow>=10.0
+vosk>=0.3.45
+requests>=2.31
 pyinstaller>=6.0

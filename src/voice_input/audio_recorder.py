@@ -62,6 +62,9 @@ class AudioRecorder:
         self._silence_notified = False
         # 静音超时回调（在录音回调线程触发）
         self.on_silence_timeout: Optional[Callable[[], None]] = None
+        # 音频分接回调（在录音回调线程触发，参数为本块的 Int16 LE PCM bytes）
+        # 供语音结束词检测复用同一麦克风流，无需第二个输入流
+        self.on_audio_chunk: Optional[Callable[[bytes], None]] = None
         # 启动状态
         self._running = False
 
@@ -153,6 +156,13 @@ class AudioRecorder:
         if self.on_amplitude:
             try:
                 self.on_amplitude(rms)
+            except Exception:
+                pass
+
+        # 分接音频块给语音结束词检测（int16 LE bytes，与 Vosk 输入格式一致）
+        if self.on_audio_chunk is not None:
+            try:
+                self.on_audio_chunk(samples_to_int16_le(mono))
             except Exception:
                 pass
 

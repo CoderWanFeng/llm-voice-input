@@ -30,6 +30,8 @@ class StatusBarController:
         # 菜单回调（由 app 注入）
         self.on_show_panel: Optional[Callable[[], None]] = None
         self.on_setup_credentials: Optional[Callable[[], None]] = None
+        self.on_setup_wake_word: Optional[Callable[[], None]] = None
+        self.on_setup_llm: Optional[Callable[[], None]] = None
         self.on_test_hotkey: Optional[Callable[[], None]] = None
         self.on_test_5s_recording: Optional[Callable[[], None]] = None
         self.on_quit: Optional[Callable[[], None]] = None
@@ -57,6 +59,8 @@ class StatusBarController:
             menu = pystray.Menu(
                 pystray.MenuItem("设置语音识别凭证…", self._on_setup_credentials, default=True),
                 pystray.MenuItem("显示面板", self._on_show_panel),
+                pystray.MenuItem("语音唤醒设置…", self._on_setup_wake),
+                pystray.MenuItem("AI 润色设置…", self._on_setup_llm),
                 pystray.MenuItem("测试快捷键", self._on_test_hotkey),
                 pystray.MenuItem("5秒自动录音测试", self._on_test_5s),
                 pystray.MenuItem("关于", self._on_about),
@@ -135,6 +139,14 @@ class StatusBarController:
     def _on_test_5s(self, icon, item) -> None:
         """菜单：5秒自动录音测试。"""
         self._dispatch_to_main(lambda: self.on_test_5s_recording() if self.on_test_5s_recording else None)
+
+    def _on_setup_wake(self, icon, item) -> None:
+        """菜单：打开语音唤醒设置对话框。"""
+        self._dispatch_to_main(lambda: self.on_setup_wake_word() if self.on_setup_wake_word else None)
+
+    def _on_setup_llm(self, icon, item) -> None:
+        """菜单：打开 AI 润色设置对话框。"""
+        self._dispatch_to_main(lambda: self.on_setup_llm() if self.on_setup_llm else None)
 
     def _on_about(self, icon, item) -> None:
         """菜单：关于。"""

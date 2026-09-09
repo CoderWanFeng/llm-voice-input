@@ -84,6 +84,8 @@ class FloatingPanelController:
         self._anim_phase = 0.0          # 动画相位（0~1）
         self._current_state = STATE_TRANSCRIBING
         self._current_provider_name = "语音识别"
+        # 唤醒词提示（show_idle 时设置；空串表示未启用语音唤醒）
+        self._current_wake_word = ""
         self._current_partial = ""
         self._current_amplitude = 0.0
         self._pulse_running = False
@@ -132,7 +134,7 @@ class FloatingPanelController:
 
     # ===== 状态显示接口 =====
 
-    def show_idle(self, provider_name: str = "语音识别") -> None:
+    def show_idle(self, provider_name: str = "语音识别", wake_word: str = "") -> None:
         """显示就绪面板（启动时默认打开，不自动隐藏）。
 
         让用户运行工具后立即看到主界面，而不是只有托盘图标。
@@ -141,12 +143,14 @@ class FloatingPanelController:
 
         Args:
             provider_name: 当前 ASR 提供商名称
+            wake_word: 唤醒词提示（如「小薇小薇」，空串表示未启用语音唤醒）
         """
         self._stop_pulse()
         self._stop_spinner()
         self._cancel_auto_hide()
         self._current_state = STATE_IDLE
         self._current_provider_name = provider_name
+        self._current_wake_word = wake_word
         self._ensure_panel()
         self._render_idle()
 
@@ -180,6 +184,23 @@ class FloatingPanelController:
         self._current_state = STATE_TRANSCRIBING
         self._ensure_panel()
         self._render_transcribing(partial_text)
+        self._start_spinner()
+
+    def show_polishing(self, partial_text: str = "") -> None:
+        """显示 AI 润色中状态（复用识别中的旋转样式）。
+
+        启用 LLM 后处理后，识别完成到文本注入之间会调用大模型，
+        此状态告知用户正在进行 AI 纠错，避免误以为卡死。
+
+        Args:
+            partial_text: 待润色的原始文本（展示给用户参考）
+        """
+        self._stop_pulse()
+        self._stop_spinner()
+        self._current_partial = partial_text
+        self._current_state = STATE_TRANSCRIBING
+        self._ensure_panel()
+        self._render_transcribing(partial_text, title="AI 润色中")
         self._start_spinner()
 
     def show_final(self, text: str) -> None:
@@ -363,10 +384,14 @@ class FloatingPanelController:
             anchor="w",
         )
 
-        # 底部提示
+        # 底部提示：启用语音唤醒时提示唤醒词，否则仅提示快捷键
+        if self._current_wake_word:
+            hint = f"说「{self._current_wake_word}」或按 Ctrl + Alt + K 开始录音 · 右键托盘图标可配置"
+        else:
+            hint = "按 Ctrl + Alt + K 开始 / 停止录音 · 右键托盘图标可配置"
         c.create_text(
             w // 2, h - 16,
-            text="按 Ctrl + Alt + K 开始 / 停止录音 · 右键托盘图标可配置",
+            text=hint,
             fill=_COLOR_TEXT_DIM,
             font=("Microsoft YaHei UI", 9),
         )
@@ -522,8 +547,13 @@ class FloatingPanelController:
         # 更新音量条
         self._update_volume_bars(amplitude)
 
-    def _render_transcribing(self, partial_text: str) -> None:
-        """渲染识别中状态：蓝色旋转指示 + partial 文本。"""
+    def _render_transcribing(self, partial_text: str, title: str = "正在识别中") -> None:
+        """渲染识别中状态：蓝色旋转指示 + partial 文本。
+
+        Args:
+            partial_text: 展示文本
+            title: 状态标题（识别中/AI 润色中）
+        """
         self._ensure_panel()
         c = self._canvas
         if c is None:
@@ -552,7 +582,7 @@ class FloatingPanelController:
         # 状态文字
         c.create_text(
             start_x + 3 * dot_gap + 16, center_y - 10,
-            text="正在识别中",
+            text=title,
             fill=_COLOR_TEXT,
             font=("Microsoft YaHei UI", 13, "bold"),
             anchor="w",

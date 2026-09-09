@@ -7,7 +7,9 @@
 - 启动帧：msgType=0b0001, flags=0, 无 seq, byte2=0x10（JSON 无压缩）
 - 音频帧：msgType=0b0010, flags=0b0001, seq=N(从 2 递增；启动帧占用序列 1), byte2=0x00（raw 无压缩）
 - 结束帧：msgType=0b0010, flags=0b0011（负包标记+带 seq）, seq=-N(取相反数), byte2=0x00, 空 payload
-- 结果帧 msgType=0b1001：result.text + result.utterances[].definite，definite=true 表示识别完成
+- 结果帧 msgType=0b1001：result.text + result.utterances[].definite
+  definite=true 表示一个 utterance（句子）的 final，不是整个会话结束；
+  整个会话由客户端发结束帧后服务端 1000 正常关闭来结束
 - 错误帧 msgType=0b1111
 
 继承 ASRBase 抽象基类，使用 websockets 异步实现，运行在独立线程的事件循环中。
@@ -81,6 +83,8 @@ class VolcASRService(ASRBase):
         # 状态标记
         self._send_finished = False
         self._closed = False
+        # 最近一次服务端返回的识别文本（正常关闭时兜底使用，避免结果丢失）
+        self._last_text = ""
 
     # ===== 对外 API（在主线程调用，转发到事件循环线程） =====
 
@@ -90,6 +94,7 @@ class VolcASRService(ASRBase):
         self._next_seq = 2
         self._send_finished = False
         self._closed = False
+        self._last_text = ""
         self._audio_queue = queue.Queue()
         self._sender_task = None
 
@@ -218,9 +223,25 @@ class VolcASRService(ASRBase):
             try:
                 message = await self._ws.recv()
             except Exception as e:
-                if not self._closed:
-                    DiagLog.shared().write(f"[ASR] receive error: {e}")
-                    self._fail(f"ws recv: {e}")
+                if self._closed:
+                    return
+                # 服务端在收到结束帧后会以 1000 (OK) 正常关闭连接，
+                # 这不是错误：按会话正常结束处理，避免误报 fail
+                #（与科大讯飞服务的正常关闭处理方式一致）
+                code = getattr(e, "code", None)
+                if code is None:
+                    # websockets 新版把收到的关闭码放在 e.rcvd.code
+                    code = getattr(getattr(e, "rcvd", None), "code", None)
+                if code == 1000 and self._send_finished:
+                    DiagLog.shared().write("[ASR] 服务端正常关闭 (1000 OK)，会话结束")
+                    self._closed = True
+                    final_text = self._last_text
+                    self._schedule_complete(
+                        ASRResult(text=final_text, is_final=True) if final_text else None
+                    )
+                    return
+                DiagLog.shared().write(f"[ASR] receive error: {e}")
+                self._fail(f"ws recv: {e}")
                 return
             # websockets 接收 bytes
             if isinstance(message, str):
@@ -307,12 +328,18 @@ class VolcASRService(ASRBase):
                 f"[ASR] resp: text={text[:80]} definite={is_definite} utter={len(utterances)}"
             )
             if text:
+                # 记录最近文本：服务端可能不发 definite 帧直接关闭，
+                # 正常关闭时用该文本兜底完成
+                self._last_text = text
                 self._schedule_partial(text)
             if is_definite:
-                self._closed = True
-                self._schedule_complete(ASRResult(text=text, is_final=True))
-                # 关闭 WebSocket
-                asyncio.run_coroutine_threadsafe(self._close_ws(), self._loop)
+                # 句子级 final：一个 utterance 结束，不是整个会话结束。
+                # 长语音场景下用户可能继续说下一句，会话应等用户主动
+                # finish()（按热键/说结束词）后由服务端 1000 正常关闭来结束。
+                # _last_text 已在上面更新，这里不结束会话、不关闭 WebSocket。
+                DiagLog.shared().write(
+                    f"[ASR] 句子级 final（utter={len(utterances)}），会话继续等待用户结束"
+                )
 
     def _build_frame(self, message_type: int, flags: int, seq: Optional[int], payload: bytes, serialization: int = 0) -> bytes:
         """按协议构造二进制帧字节串。

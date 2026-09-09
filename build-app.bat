@@ -67,6 +67,10 @@ REM Set icon option
 set "ICON_CMD="
 if exist "resources\icon.ico" set "ICON_CMD=--icon resources\icon.ico"
 
+REM Set wake word model option (bundle Vosk model for offline wake word)
+set "MODEL_CMD="
+if exist "resources\models\vosk-model-small-cn-0.22" set "MODEL_CMD=--add-data resources\models;models"
+
 python -m PyInstaller ^
     --noconsole ^
     --onefile ^
@@ -76,8 +80,11 @@ python -m PyInstaller ^
     --hidden-import websockets ^
     --hidden-import pynput ^
     --hidden-import pystray ^
+    --hidden-import vosk ^
     --collect-all sounddevice ^
+    --collect-all vosk ^
     %ICON_CMD% ^
+    %MODEL_CMD% ^
     src\voice_input\__main__.py
 
 if errorlevel 1 goto :build_error

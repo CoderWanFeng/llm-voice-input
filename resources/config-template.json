@@ -1,0 +1,17 @@
+{
+  "provider": "volc",
+  "providers": {
+    "volc": {
+      "app_id": "",
+      "access_token": ""
+    }
+  },
+  "wake_word_enabled": true,
+  "wake_word": "小薇小薇",
+  "stop_word_enabled": true,
+  "stop_word": "结束录制",
+  "llm_enabled": true,
+  "llm_base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+  "llm_api_key": "",
+  "llm_model": "qwen3.7-plus"
+}
