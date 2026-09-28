@@ -23,7 +23,7 @@ macOS VoiceInput 的 Windows 移植版，行为与原项目一致：按 `Ctrl + 
 - **pynput** —— 全局热键监听 `Ctrl + Alt + K`
 - **ctypes + user32** —— 剪贴板写入、`SendInput` 模拟粘贴、焦点恢复
 - **pystray + Pillow** —— 系统托盘图标与菜单
-- **tkinter** —— 录音悬浮面板（标准库，随官方 Python 安装）
+- **PySide6 (Qt6)** —— 录音悬浮面板与设置对话框（QPainter 自绘 + QPropertyAnimation 动画）
 - **vosk** —— 离线语音唤醒词检测
 - **requests** —— LLM 润色 API 调用
 
@@ -106,8 +106,8 @@ python -m voice_input
 
 ### 方式二：打包为单文件 exe
 
+进入项目目录：
 ```bat
-cd /d e:\ai\voice\llm-voice-input4windows
 build-app.bat
 ```
 

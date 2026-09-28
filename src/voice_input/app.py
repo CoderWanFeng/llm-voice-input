@@ -4,7 +4,7 @@
 1. 启动时 load config，未配置则弹 APIKeyDialog
 2. 创建各组件：StateMachine / AudioRecorder / ASRBase 实现 / HotkeyManager / FloatingPanelController / StatusBarController
 3. 注册热键回调、菜单回调、ASR 回调、音量回调
-4. 启动托盘（后台线程）、热键（后台线程）、tkinter 主循环（主线程）
+4. 启动托盘（后台线程）、热键（后台线程）、Qt 主循环（主线程）
 
 ASR 提供商工厂模式：
 - 通过 _ASR_PROVIDERS 注册表映射提供商ID到实现类
@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import threading
 import time
+from difflib import SequenceMatcher
 from typing import Dict, Optional, Type
 
 from . import config as config_module
@@ -105,8 +106,6 @@ class VoiceInputApp:
         self._current_amplitude = 0.0
         # 当前 partial 文本（用于面板刷新）
         self._current_partial = ""
-        # 拉取定时器 id
-        self._poll_id: Optional[str] = None
         # 退出标志
         self._quitting = False
         # 当前提供商名称（用于面板显示）
@@ -180,7 +179,7 @@ class VoiceInputApp:
             )
         )
 
-        # 主线程跑 tkinter 主循环
+        # 主线程跑 Qt 主循环
         self._panel.run_mainloop()
 
         # 退出后清理
@@ -341,11 +340,7 @@ class VoiceInputApp:
         if self._strip_stop_word:
             self._strip_stop_word = False
             stop = config_module.load().stop_word
-            if stop and stop in cleaned:
-                cleaned = cleaned.replace(stop, "")
-                # 去除剔除后残留的边缘标点与空白
-                cleaned = cleaned.strip(" ，。,.！!？?、；;：: \n\t")
-                DiagLog.shared().write("[App] 已从识别结果中剔除结束词")
+            cleaned = self._strip_stop_word_from_text(cleaned, stop)
         DiagLog.shared().write(f"[App] 清洗后文本: {cleaned[:80]}")
         # 空文本：直接展示原始结果并复位（无可润色内容）
         if not cleaned:
@@ -418,17 +413,12 @@ class VoiceInputApp:
     # ===== 音频拉取定时器 =====
 
     def _schedule_poll(self) -> None:
-        """安排下一次音频拉取。"""
-        self._poll_id = self._panel.root().after(_AUDIO_POLL_MS, self._poll_audio)
+        """启动周期性音频拉取定时器（PySide6 QTimer 替代 tkinter after 循环）。"""
+        self._panel.start_polling(self._poll_audio, _AUDIO_POLL_MS)
 
     def _cancel_poll(self) -> None:
         """取消挂起的拉取任务。"""
-        if self._poll_id is not None:
-            try:
-                self._panel.root().after_cancel(self._poll_id)
-            except Exception:
-                pass
-            self._poll_id = None
+        self._panel.stop_polling()
 
     def _poll_audio(self) -> None:
         """定时拉取音频并发送 ASR。"""
@@ -618,6 +608,87 @@ class VoiceInputApp:
         self._strip_stop_word = True
         self._end_recording()
 
+    def _strip_stop_word_from_text(self, text: str, stop: str) -> str:
+        """从 ASR 识别结果中剔除结束词文本。
+
+        三层剔除策略（按优先级）：
+        1. **精确子串匹配**：识别结果中精确包含结束词（如「结束录音」）
+           → 直接 replace 删除。处理清晰发音场景。
+        2. **末尾可变长度模糊匹配**：结束词在录音末尾，ASR 可能：
+           - 转写为同音/近音字（如「结束录音」→「点数录音」）
+           - 漏识别部分字（如「结束录音」→「结束」，少「录音」两字）
+           - 上述两种情况叠加
+           遍历 k=1..N（N=结束词字符数），计算「text末尾 k 字」与「结束词前 k 字」
+           的相似度，选相似度最高且≥阈值的 k 切末尾 k 字。
+           阈值=0.5：要求至少半数字符匹配。
+           选最高 ratio 而非最大 k，可避免 ASR 漏字时多切用户正常内容。
+        3. **兜底**：所有 k 值相似度均 < 0.5，不剔除，避免误切用户正常内容。
+
+        剔除后清理末尾残留标点与空白。
+
+        Args:
+            text: ASR 清洗后的文本
+            stop: 结束词（如「结束录音」）
+
+        Returns:
+            剔除结束词后的文本；无法可靠剔除时返回原文
+        """
+        # 结束词为空：无操作
+        if not stop or not text:
+            return text
+
+        # 去除首尾标点空白，便于后续匹配
+        _PUNCT = " ，。,.！!？?、；;：: \n\t"
+
+        # 策略 1：精确子串匹配（旧逻辑兼容）
+        if stop in text:
+            cleaned = text.replace(stop, "")
+            cleaned = cleaned.strip(_PUNCT)
+            DiagLog.shared().write(
+                f"[App] 已精确剔除结束词「{stop}」（识别结果含完整子串）"
+            )
+            return cleaned
+
+        # 策略 2：末尾可变长度模糊匹配
+        # 先去掉末尾标点（ASR 常在结束词后加句号），获取末尾"裸"内容
+        stripped = text.rstrip(_PUNCT)
+        if not stripped:
+            return text
+
+        # 遍历 k=1..min(N, len(stripped))，选 ratio 最高且≥0.5 的 k
+        max_k = min(len(stop), len(stripped))
+        best_k = 0
+        best_ratio = 0.0
+        best_tail = ""
+        for k in range(1, max_k + 1):
+            tail = stripped[-k:]
+            prefix = stop[:k]
+            ratio = SequenceMatcher(None, prefix, tail).ratio()
+            if ratio > best_ratio:
+                best_ratio = ratio
+                best_k = k
+                best_tail = tail
+
+        DiagLog.shared().write(
+            f"[App] 结束词模糊匹配：识别末尾最佳对齐 k={best_k}「{best_tail}」"
+            f"vs 结束词前缀「{stop[:best_k]}」，相似度={best_ratio:.2f}"
+        )
+
+        if best_ratio >= 0.5:
+            # 相似度足够：切末尾 best_k 字，保留前文
+            cleaned = stripped[:-best_k].rstrip(_PUNCT)
+            DiagLog.shared().write(
+                f"[App] 已模糊剔除结束词末尾「{best_tail}」"
+                f"（k={best_k}, 相似度 {best_ratio:.2f} ≥ 0.5）"
+            )
+            return cleaned
+
+        # 策略 3：所有 k 值相似度均过低，不剔除（避免误切用户正常内容）
+        DiagLog.shared().write(
+            f"[App] 结束词最高相似度 {best_ratio:.2f} < 0.5，保留原文不剔除"
+        )
+        return text
+
     def _on_test_hotkey(self) -> None:
         """菜单：测试快捷键。"""
         self._panel.show_message_test("快捷键测试：触发一次")
@@ -635,8 +706,8 @@ class VoiceInputApp:
         DiagLog.shared().write("[App] 启动 5 秒自动录音测试")
         # 开始录音
         self._begin_recording()
-        # 5 秒后自动结束
-        self._panel.root().after(5000, self._auto_end_recording)
+        # 5 秒后自动结束（PySide6 QTimer.singleShot 替代 tkinter root.after）
+        self._panel.schedule_on_main(self._auto_end_recording, 5000)
 
     def _auto_end_recording(self) -> None:
         """5 秒测试自动结束录音。"""
@@ -659,7 +730,7 @@ class VoiceInputApp:
         self._hotkey.stop()
         self._wake.stop()
         self._tray.stop()
-        # 退出 tkinter 主循环
+        # 退出 Qt 主循环
         self._panel.quit_mainloop()
 
     def _cleanup(self) -> None:
