@@ -1,0 +1,13 @@
+PySide6==6.11.2
+sounddevice==0.5.6
+numpy==1.26.4
+pywin32==312
+requests==2.31.0
+pydantic==2.13.5
+keyring==25.7.0
+soxr==1.1.0
+uiautomation==2.0.29
+tencentcloud-sdk-python-asr==3.1.177
+
+# 仅打包时需要（运行 exe 不需要）
+pyinstaller==6.22.2
