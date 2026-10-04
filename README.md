@@ -57,13 +57,27 @@ tests/            冒烟 / 集成 / 注入端到端 / 设置与日志测试
 ## 打包成 exe（双击即用）
 
 ```bash
-# 方式一：双击 packaging/build.bat（最省事）
+# 方式一：双击 packaging/build.bat（最省事，推荐）
 # 方式二：命令行
-.venv/Scripts/python.exe -m pip install pyinstaller
+.venv/Scripts/python.exe -m pip install -r requirements.txt
 .venv/Scripts/python.exe -m PyInstaller packaging/VoiceInput.spec --noconfirm --distpath dist --workpath build
 ```
 
 产物：`dist/VoiceInput.exe`（约 74MB，**单文件，可复制到任意位置双击运行**，不需要装 Python）。
+
+### 换一台机器 / 重新克隆仓库后
+
+`.venv/` 和 `dist/`、``build/`` 都不进 git，所以克隆下来必然没有虚拟环境——
+**直接双击 `build.bat` 即可**，它会自动完成「找 Python → 建 .venv → 装依赖 → 打包」四步，
+中间不需要任何手动操作。唯一的前提是机器上装有 Python 3.10+（建议 3.12）。
+
+> `packaging/build.bat` 是 **GBK 编码 + CRLF 换行**。中文 Windows 的 cmd 默认按 GBK 解析批处理，
+> 存成 UTF-8 或 LF 换行会导致 `for` / `if` 块解析错位（现象是满屏「不是内部或外部命令」，
+> 且报错内容与源码对不上）。改动这个文件之后跑一次：
+>
+> ```bash
+> python packaging/normalize_bat.py    # 把编码与换行符修正回 GBK + CRLF
+> ```
 
 ```bash
 dist/VoiceInput.exe --diag    # 自检：检查凭据库、麦克风、热键、Qt、托盘，结果写进日志

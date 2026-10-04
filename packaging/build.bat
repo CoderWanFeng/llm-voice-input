@@ -1,18 +1,127 @@
 @echo off
-chcp 65001 >nul
 cd /d "%~dp0.."
 
-echo æ­£åœ¨æ‰“åŒ…ï¼Œé¦–æ¬¡çº¦ 2-5 åˆ†é’Ÿï¼Œè¯·ç¨å€™...
-.venv\Scripts\python.exe -m PyInstaller packaging\VoiceInput.spec --noconfirm --distpath dist --workpath build
+rem ============================================================
+rem  ÓïÒôÊäÈë¹¤¾ß - Ò»¼ü´ò°ü
+rem  ËµÃ÷£º.venv ²»½ø git£¬¿ËÂ¡µ½ĞÂÎ»ÖÃºó±¾½Å±¾»á×Ô¶¯½¨»·¾³¡¢×°ÒÀÀµÔÙ´ò°ü¡£
+rem  ×¢Òâ£º±¾ÎÄ¼şÎª GBK ±àÂë + CRLF »»ĞĞ£¬ÇëÎğÓÃ±à¼­Æ÷Áí´æÎª UTF-8/LF¡£
+rem ============================================================
 
+rem ´ò°üÆÚ¼äÇåµôÍâ²¿×¢ÈëµÄ PYTHONPATH£ºÆäËû¹¤¾ß¹ÒµÄ sitecustomize »á¸ÉÈÅ pip Óë PyInstaller
+set "PYTHONPATH="
+set "PYTHONDONTWRITEBYTECODE=1"
+rem ÈÃ pip °´ UTF-8 ½âÎö requirements.txt£º·ñÔòËü°´ÏµÍ³±¾µØ±àÂë(cp936)½âÂë£¬Óöµ½ÖĞÎÄ¾Í UnicodeDecodeError
+set "PYTHONUTF8=1"
+set "VENV_PY=.venv\Scripts\python.exe"
+set "DIST_EXE=dist\VoiceInput.exe"
+
+echo ============================================================
+echo   ÓïÒôÊäÈë¹¤¾ß - ´ò°ü
+echo   ÏîÄ¿Ä¿Â¼£º%CD%
+echo ============================================================
+echo.
+
+if exist "%VENV_PY%" goto deps
+
+echo [1/3] Î´·¢ÏÖ .venv£¬ÕıÔÚ×Ô¶¯´´½¨ĞéÄâ»·¾³...
+call :find_python
+if "%PYTHON%"=="" goto no_python
+echo       Ê¹ÓÃ½âÊÍÆ÷£º%PYTHON%
+"%PYTHON%" -m venv --system-site-packages .venv
+if errorlevel 1 goto venv_fail
+if not exist "%VENV_PY%" goto venv_fail
+echo       ĞéÄâ»·¾³ÒÑ¾ÍĞ÷
+echo.
+
+:deps
+echo [2/3] ¼ì²é²¢°²×°ÒÀÀµ£¨Ê×´Î½ÏÂı£¬Ö®ºó»áÌø¹ıÒÑ×°µÄ£©...
+"%VENV_PY%" -m pip install -q -r requirements.txt
 if errorlevel 1 (
-  echo.
-  echo æ‰“åŒ…å¤±è´¥ï¼Œè¯·çœ‹ä¸Šé¢çš„æŠ¥é”™ã€‚
-  pause
-  exit /b 1
+  echo       Ä¬ÈÏÔ´Ê§°Ü£¬¸ÄÓÃÇå»ª¾µÏñÖØÊÔÒ»´Î...
+  "%VENV_PY%" -m pip install -q -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple --trusted-host pypi.tuna.tsinghua.edu.cn
+  if errorlevel 1 goto deps_fail
 )
+"%VENV_PY%" -c "import PySide6, sounddevice, numpy, win32gui, keyring, pydantic, requests, soxr, uiautomation" >nul 2>nul
+if errorlevel 1 goto deps_fail
+echo       ÒÀÀµĞ£ÑéÍ¨¹ı
+echo.
+
+echo [3/3] ÕıÔÚ´ò°ü£¨Ê×´ÎÔ¼ 2-5 ·ÖÖÓ£©...
+"%VENV_PY%" -m PyInstaller packaging\VoiceInput.spec --noconfirm --distpath dist --workpath build
+if errorlevel 1 goto build_fail
+if not exist "%DIST_EXE%" goto build_fail
 
 echo.
-echo æ‰“åŒ…å®Œæˆï¼šdist\VoiceInput.exe
-echo å»ºè®®å…ˆè‡ªæ£€ä¸€æ¬¡ï¼šdist\VoiceInput.exe --diag
+echo ============================================================
+echo   ´ò°üÍê³É£º%DIST_EXE%
+echo   ½¨ÒéÏÈ×Ô¼ì£º%DIST_EXE% --diag
+echo ============================================================
+echo.
 pause
+exit /b 0
+
+rem ---------------- Ñ°ÕÒ¿ÉÓÃµÄ Python ----------------
+:find_python
+set "PYTHON="
+where py >nul 2>nul
+if errorlevel 1 goto fp_python
+for /f "delims=" %%i in ('py -3 -c "import sys; print(sys.executable)" 2^>nul') do set "PYTHON=%%i"
+if defined PYTHON goto fp_check
+
+:fp_python
+where python >nul 2>nul
+if errorlevel 1 goto fp_paths
+for /f "delims=" %%i in ('python -c "import sys; print(sys.executable)" 2^>nul') do set "PYTHON=%%i"
+if defined PYTHON goto fp_check
+
+:fp_paths
+for %%P in ("%LOCALAPPDATA%\Programs\Python\Python312\python.exe" "%LOCALAPPDATA%\Programs\Python\Python311\python.exe" "%LOCALAPPDATA%\Programs\Python\Python310\python.exe" "C:\Python312\python.exe" "C:\Python311\python.exe" "C:\Python310\python.exe" "E:\python\python3.12\python.exe" "D:\python\python3.12\python.exe") do if not defined PYTHON if exist %%P set "PYTHON=%%~P"
+
+:fp_check
+if not defined PYTHON goto :eof
+"%PYTHON%" -c "import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)" >nul 2>nul
+if errorlevel 1 (
+  echo       ÕÒµ½µÄ Python °æ±¾¹ıµÍ£¨ĞèÒª 3.10+£©£º%PYTHON%
+  set "PYTHON="
+)
+goto :eof
+
+rem ---------------- ´íÎó³ö¿Ú ----------------
+:no_python
+echo.
+echo ´ò°üÊ§°Ü£ºÃ»ÕÒµ½ Python 3.10 ¼°ÒÔÉÏ°æ±¾¡£
+echo.
+echo ½â¾ö°ì·¨¶şÑ¡Ò»£º
+echo   1. µ½ python.org °²×° Python 3.12£¬Îñ±Ø¹´Ñ¡ Add python.exe to PATH£¬È»ºóÖØÅÜ
+echo   2. ÊÖ¶¯½¨»·¾³ºóÖØÅÜ£º
+echo        python -m venv .venv
+echo        .venv\Scripts\python.exe -m pip install -r requirements.txt
+echo.
+pause
+exit /b 1
+
+:venv_fail
+echo.
+echo ´ò°üÊ§°Ü£º´´½¨ĞéÄâ»·¾³Ê§°Ü£¨¼ûÉÏ·½±¨´í£©¡£
+echo ÈôÌáÊ¾È¨ÏŞÎÊÌâ£¬ÇëÒÔÆÕÍ¨ÓÃ»§Éí·İÔËĞĞ£¬²»ÒªÓÃ¹ÜÀíÔ±¡£
+echo.
+pause
+exit /b 1
+
+:deps_fail
+echo.
+echo ´ò°üÊ§°Ü£ºÒÀÀµÃ»×°È«¡£
+echo ¿ÉÊÖ¶¯Ö´ĞĞÏÂÃæÕâÌõ¿´ÕæÊµ±¨´í£º
+echo   .venv\Scripts\python.exe -m pip install -r requirements.txt
+echo.
+pause
+exit /b 1
+
+:build_fail
+echo.
+echo ´ò°üÊ§°Ü£¬Çë¿´ÉÏÃæµÄ±¨´í¡£
+echo ³£¼ûÔ­Òò£ºÉ±¶¾Èí¼şËø×¡ dist£¬»ò build Ä¿Â¼²ĞÁô¡£
+echo ¿É³¢ÊÔÉ¾³ı build¡¢dist Á½¸öÎÄ¼ş¼ĞºóÖØÅÜ¡£
+echo.
+pause
+exit /b 1
