@@ -17,3 +17,4 @@ dist/
 
 # 本机工作数据（项目记忆、截图）
 .workbuddy/
+.idea/
